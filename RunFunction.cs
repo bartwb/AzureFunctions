@@ -11,14 +11,12 @@ public class RunFunction
         [HttpTrigger(AuthorizationLevel.Anonymous, "post", Route = "run")] HttpRequestData req)
     {
         var body = await new StreamReader(req.Body).ReadToEndAsync();
-        var sessionId = $"sess-{Guid.NewGuid():N}".Substring(0, 12);
-        var (status, response, contentType) = await AcaForwarder.ForwardAsync("run", body, sessionId);
+        var (jobId, operation) = await JobSubmitter.EnqueueAsync("run", body);
 
-        var resp = req.CreateResponse((HttpStatusCode)status);
-        resp.Headers.Add("Content-Type", contentType);
-        var bytes = System.Text.Encoding.UTF8.GetBytes(response ?? "");
-        await resp.Body.WriteAsync(bytes, 0, bytes.Length);
-        
+        var resp = req.CreateResponse(HttpStatusCode.Accepted);
+        resp.Headers.Add("Content-Type", "application/json");
+        resp.Headers.Add("Location", $"/api/jobs/{operation}/{jobId}");
+        await resp.WriteStringAsync($$"""{"jobId":"{{jobId}}","statusUrl":"/api/jobs/{{operation}}/{{jobId}}"}""");
         return resp;
     }
 }

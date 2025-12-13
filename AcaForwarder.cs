@@ -21,6 +21,12 @@ public static class AcaForwarder
         return token.Token;
     }
 
+    private static bool ShouldRetry(HttpStatusCode s) =>
+    s == (HttpStatusCode)429 ||
+    s == HttpStatusCode.ServiceUnavailable ||   // 503
+    s == HttpStatusCode.BadGateway ||           // 502
+    s == HttpStatusCode.GatewayTimeout;         // 504
+
     public static async Task<(int status, string body, string contentType)> ForwardAsync(
         string action,
         string requestBody,
@@ -53,7 +59,7 @@ public static class AcaForwarder
 
         // Retry on 429 like your Flask version
         var delaySeconds = 1.0;
-        for (int attempt = 1; attempt <= 8; attempt++)
+        for (int attempt = 1; attempt <= 12; attempt++)
         {
             using var msg = new HttpRequestMessage(HttpMethod.Post, url);
             msg.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await GetBearerAsync());
@@ -61,14 +67,15 @@ public static class AcaForwarder
 
             using var resp = await _http.SendAsync(msg, HttpCompletionOption.ResponseContentRead);
 
-            if (resp.StatusCode != (HttpStatusCode)429)
+            if (!ShouldRetry(resp.StatusCode))
             {
                 var body = await resp.Content.ReadAsStringAsync();
                 var ct = resp.Content.Headers.ContentType?.ToString() ?? "application/json";
                 return ((int)resp.StatusCode, body, ct);
             }
 
-            // 429
+
+            // retryable response (429/502/503/504)
             var ra = resp.Headers.RetryAfter?.Delta?.TotalSeconds;
             var sleep = (ra.HasValue && ra.Value > 0) ? ra.Value : delaySeconds;
             await Task.Delay(TimeSpan.FromSeconds(sleep));
