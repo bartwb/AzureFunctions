@@ -40,8 +40,8 @@ public static class JobSubmitter
         await StorageClients.JobsTable().AddEntityAsync(entity);
 
         // Message naar queue (klein houden)
-        var msg = JsonSerializer.Serialize(new JobMessage(operation, jobId));
-        await StorageClients.JobsQueue().SendMessageAsync(Convert.ToBase64String(Encoding.UTF8.GetBytes(msg)));
+        var msgJson = JsonSerializer.Serialize(new JobMessage(operation, jobId));
+        await StorageClients.JobsQueue().SendMessageAsync(msgJson);
 
         return (jobId, operation);
     }

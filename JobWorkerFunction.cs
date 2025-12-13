@@ -10,11 +10,10 @@ namespace FunctionsGateway;
 public class JobWorkerFunction
 {
     [Function("job-worker")]
-    public async Task Run([QueueTrigger("jobs", Connection = "StorageConnection")] string msgBase64)
+    public async Task Run([QueueTrigger("jobs", Connection = "StorageConnection")] string msgJson)
     {
-        var msgJson = Encoding.UTF8.GetString(Convert.FromBase64String(msgBase64));
         var msg = JsonSerializer.Deserialize<JobMessage>(msgJson)
-                  ?? throw new InvalidOperationException("Invalid queue message");
+                ?? throw new InvalidOperationException("Invalid queue message");
 
         var table = StorageClients.JobsTable();
 
