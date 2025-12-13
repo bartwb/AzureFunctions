@@ -17,7 +17,7 @@ public static class AcaForwarder
 
     private static async Task<string> GetBearerAsync()
     {
-        var token = await _cred.GetTokenAsync(new TokenRequestContext(_scopes));
+        var token = await _cred.GetTokenAsync(new TokenRequestContext(_scopes), default);
         return token.Token;
     }
 
