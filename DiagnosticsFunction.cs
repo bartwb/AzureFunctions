@@ -90,29 +90,28 @@ public class DiagnosticsFunction
     }
 
     private static async Task<object> PingRunnerAsync()
+{
+    var poolEndpoint = Environment.GetEnvironmentVariable("POOL_ENDPOINT");
+    if (string.IsNullOrWhiteSpace(poolEndpoint))
+        return new { error = "POOL_ENDPOINT not set" };
+
+    var sessionId = "diag-" + Guid.NewGuid().ToString("N").Substring(0, 12);
+
+    async Task<object> DoRequestAsync(HttpRequestMessage req)
     {
-        var poolEndpoint = Environment.GetEnvironmentVariable("POOL_ENDPOINT");
-        if (string.IsNullOrWhiteSpace(poolEndpoint))
-        {
-            return new { error = "POOL_ENDPOINT not set" };
-        }
-
-        // We do a very lightweight call that should prove reachability.
-        // Prefer a dedicated /health endpoint if your runner has it.
-        var healthUrl = $"{poolEndpoint}/healthstatus";
         var sw = Stopwatch.StartNew();
-
         try
         {
-            using var req = new HttpRequestMessage(HttpMethod.Get, healthUrl);
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await GetBearerAsync());
+
             using var resp = await _http.SendAsync(req);
             var body = await resp.Content.ReadAsStringAsync();
             sw.Stop();
 
             return new
             {
-                url = healthUrl,
+                url = req.RequestUri?.ToString(),
+                method = req.Method.Method,
                 status = (int)resp.StatusCode,
                 elapsedMs = sw.ElapsedMilliseconds,
                 bodySnippet = body.Length > 500 ? body[..500] : body
@@ -123,11 +122,40 @@ public class DiagnosticsFunction
             sw.Stop();
             return new
             {
-                url = healthUrl,
+                url = req.RequestUri?.ToString(),
+                method = req.Method.Method,
                 elapsedMs = sw.ElapsedMilliseconds,
-                error = "Runner ping failed",
+                error = "request_failed",
                 exception = ex.Message
             };
         }
     }
+
+    // 1) healthstatus (als die bij jou bestaat)
+    var healthUrl = $"{poolEndpoint}/healthstatus?identifier={Uri.EscapeDataString(sessionId)}";
+    using var healthReq = new HttpRequestMessage(HttpMethod.Get, healthUrl);
+
+    // 2) runner call (beste end-to-end test)
+    var runnerUrl = $"{poolEndpoint}/runner?identifier={Uri.EscapeDataString(sessionId)}";
+    var payload = JsonSerializer.Serialize(new
+    {
+        action = "analyse", // of "compile" / "run" - kies wat jouw runner zeker accepteert
+        code = "Console.WriteLine(\"ping\");"
+    });
+
+    using var runnerReq = new HttpRequestMessage(HttpMethod.Post, runnerUrl);
+    runnerReq.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+
+    // Run both checks
+    var healthResult = await DoRequestAsync(healthReq);
+    var runnerResult = await DoRequestAsync(runnerReq);
+
+    return new
+    {
+        sessionId,
+        healthstatus = healthResult,
+        runnerCall = runnerResult
+    };
+}
+
 }
