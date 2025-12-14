@@ -25,4 +25,10 @@ public class JobEntity : ITableEntity
 
     public ETag ETag { get; set; }
     public DateTimeOffset? Timestamp { get; set; }
+
+    // Debugging
+    public string? LastStep { get; set; }
+    public int? RunnerHttpStatus { get; set; }
+    public string? RunnerContentType { get; set; }
+    public string? RunnerSnippet { get; set; }
 }
