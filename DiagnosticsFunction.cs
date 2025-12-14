@@ -7,6 +7,9 @@ using Microsoft.Azure.Functions.Worker.Http;
 using Azure.Core;
 using Azure.Identity;
 using System.Net.Http.Headers;
+using System.Text;
+using System.Net.Http.Headers;
+
 
 namespace FunctionsGateway;
 
@@ -144,7 +147,9 @@ public class DiagnosticsFunction
     });
 
     using var runnerReq = new HttpRequestMessage(HttpMethod.Post, runnerUrl);
-    runnerReq.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+    runnerReq.Content = new StringContent(payload, Encoding.UTF8);
+    runnerReq.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+
 
     // Run both checks
     var healthResult = await DoRequestAsync(healthReq);
