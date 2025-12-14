@@ -4,12 +4,24 @@ using System.Text.Json;
 using Azure.Storage.Queues;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
+using Azure.Core;
+using Azure.Identity;
+using System.Net.Http.Headers;
 
 namespace FunctionsGateway;
 
 public class DiagnosticsFunction
 {
     private static readonly HttpClient _http = new HttpClient();
+
+    private static readonly TokenCredential _cred = new DefaultAzureCredential();
+    private static readonly string[] _scopes = new[] { "https://dynamicsessions.io/.default" };
+
+    private static async Task<string> GetBearerAsync()
+    {
+        var token = await _cred.GetTokenAsync(new TokenRequestContext(_scopes), default);
+        return token.Token;
+    }
 
     [Function("diagnostics")]
     public async Task<HttpResponseData> Run(
@@ -87,13 +99,13 @@ public class DiagnosticsFunction
 
         // We do a very lightweight call that should prove reachability.
         // Prefer a dedicated /health endpoint if your runner has it.
-        var healthUrl = $"{poolEndpoint}/health";
+        var healthUrl = $"{poolEndpoint}/healthstatus";
         var sw = Stopwatch.StartNew();
 
         try
         {
             using var req = new HttpRequestMessage(HttpMethod.Get, healthUrl);
-            // If your pool requires auth even for /health, you can wire token here later.
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await GetBearerAsync());
             using var resp = await _http.SendAsync(req);
             var body = await resp.Content.ReadAsStringAsync();
             sw.Stop();
