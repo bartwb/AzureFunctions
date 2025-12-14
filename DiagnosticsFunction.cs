@@ -135,11 +135,11 @@ public class DiagnosticsFunction
     }
 
     // 1) healthstatus (als die bij jou bestaat)
-    var healthUrl = $"{poolEndpoint}/healthstatus?identifier={Uri.EscapeDataString(sessionId)}";
+    var healthUrl = $"{poolEndpoint}/healthstatus?identifier=testaca";
     using var healthReq = new HttpRequestMessage(HttpMethod.Get, healthUrl);
 
     // 2) runner call (beste end-to-end test)
-    var runnerUrl = $"{poolEndpoint}/runner?identifier={Uri.EscapeDataString(sessionId)}";
+    var runnerUrl = $"{poolEndpoint}/runner?identifier=testaca";
     var payload = JsonSerializer.Serialize(new
     {
         action = "analyse", // of "compile" / "run" - kies wat jouw runner zeker accepteert
