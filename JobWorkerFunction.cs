@@ -1,147 +1,132 @@
 using System.Text.Json;
 using Azure.Data.Tables;
 using Microsoft.Azure.Functions.Worker;
-using Microsoft.Extensions.Logging;
 
 namespace FunctionsGateway;
 
 public class JobWorkerFunction
 {
-    private readonly ILogger<JobWorkerFunction> _log;
-
-    public JobWorkerFunction(ILogger<JobWorkerFunction> log)
-    {
-        _log = log;
-    }
-
     [Function("job-worker")]
-    public async Task Run(
-        [QueueTrigger("jobs", Connection = "StorageConnection")] string msgJson)
+    public async Task Run([QueueTrigger("jobs", Connection = "StorageConnection")] string msgJson)
     {
-        _log.LogInformation("JOB IN msgLen={len} snippet={snippet}",
-            msgJson?.Length ?? 0,
-            msgJson?.Length > 300 ? msgJson[..300] : msgJson);
+        static int Len(string? s) => string.IsNullOrEmpty(s) ? 0 : s.Length;
+        static string Clip(string? s, int max = 400) =>
+            string.IsNullOrEmpty(s) ? "" : (s.Length <= max ? s : s[..max] + "...");
+
+        Console.WriteLine($"JOB IN  msgLen={Len(msgJson)} snippet='{Clip(msgJson, 300)}'");
 
         var table = StorageClients.JobsTable();
         JobEntity? job = null;
 
+        // helper: upsert job row (no ETag conflicts)
+        async Task TouchAsync(string step, string? error = null)
+        {
+            if (job == null) return;
+
+            job.LastStep = step;
+            job.UpdatedUtc = DateTimeOffset.UtcNow;
+            if (error != null) job.ErrorMessage = error;
+
+            await table.UpsertEntityAsync(job, TableUpdateMode.Replace);
+        }
+
         try
         {
-            // 1) Parse queue message
-            var msg = JsonSerializer.Deserialize<JobMessage>(msgJson)
-                      ?? throw new InvalidOperationException("Queue message is not valid JSON");
+            if (string.IsNullOrWhiteSpace(msgJson))
+            {
+                Console.WriteLine("JOB BAD reason=empty_msgJson -> drop");
+                return; // niets om te retry'en
+            }
 
-            _log.LogInformation("JOB STEP parsed operation={operation} jobId={jobId}",
-                msg.Operation, msg.JobId);
+            var msg = JsonSerializer.Deserialize<JobMessage>(msgJson);
+            if (msg == null || string.IsNullOrWhiteSpace(msg.Operation) || string.IsNullOrWhiteSpace(msg.JobId))
+            {
+                Console.WriteLine($"JOB BAD reason=invalid_message msg='{Clip(msgJson)}' -> drop");
+                return; // niet retry'en, dit wordt nooit goed
+            }
 
-            // 2) Fetch job
+            Console.WriteLine($"JOB STEP parsed operation='{msg.Operation}' jobId='{msg.JobId}'");
+
             job = (await table.GetEntityAsync<JobEntity>(msg.Operation, msg.JobId)).Value;
-
-            _log.LogInformation("JOB STEP fetched status={status} attempts={attempts}",
-                job.Status, job.Attempts);
+            Console.WriteLine($"JOB STEP fetched status='{job.Status}' attempts={job.Attempts} sessionId='{job.SessionId}' inputBlob='{job.InputBlobName}'");
 
             if (job.Status is "Succeeded" or "Failed")
             {
-                _log.LogInformation("JOB SKIP already finished");
+                Console.WriteLine("JOB SKIP already finished");
                 return;
             }
 
-            async Task TouchAsync(string step, string? error = null)
-            {
-                job.LastStep = step;
-                job.UpdatedUtc = DateTimeOffset.UtcNow;
-                if (error != null)
-                    job.ErrorMessage = error;
-
-                // 🔴 CRUCIAAL: Upsert → GEEN ETag conflicts → GEEN poison
-                await table.UpsertEntityAsync(job, TableUpdateMode.Replace);
-            }
-
-            // 3) Mark running
+            // mark running
             job.Status = "Running";
             job.Attempts += 1;
             await TouchAsync("Running");
 
-            // 4) Load input
+            // load input
             await TouchAsync("LoadingInput");
             var inputBlob = StorageClients.InputContainer().GetBlobClient(job.InputBlobName);
             var input = (await inputBlob.DownloadContentAsync()).Value.Content.ToString();
             await TouchAsync("InputLoaded");
 
-            // 5) Call ACA runner
+            // call runner
             await TouchAsync("CallingRunner");
-            var (status, body, contentType) =
-                await AcaForwarder.ForwardAsync(msg.Operation, input, job.SessionId);
+            var (status, body, contentType) = await AcaForwarder.ForwardAsync(msg.Operation, input, job.SessionId);
 
             job.RunnerHttpStatus = status;
             job.RunnerContentType = contentType;
             job.RunnerSnippet = body?.Length > 500 ? body[..500] : body;
-
             await TouchAsync($"RunnerReturned:{status}");
 
-            // 6) Success
+            // success
             if (status >= 200 && status < 300)
             {
                 await TouchAsync("WritingOutput");
-
                 await StorageClients.OutputContainer().CreateIfNotExistsAsync();
-                var outBlob = StorageClients.OutputContainer()
-                    .GetBlobClient($"{msg.JobId}.json");
 
-                var toStore =
-                    contentType?.Contains("application/json") == true
-                        ? body
-                        : JsonSerializer.Serialize(new
-                        {
-                            ok = true,
-                            status,
-                            contentType,
-                            body
-                        });
+                var outputBlobName = $"{msg.JobId}.json";
+                var outBlob = StorageClients.OutputContainer().GetBlobClient(outputBlobName);
+
+                var toStore = (contentType?.Contains("application/json") ?? false)
+                    ? body
+                    : JsonSerializer.Serialize(new { operation = msg.Operation, ok = true, contentType, body });
 
                 await outBlob.UploadAsync(BinaryData.FromString(toStore ?? ""), overwrite: true);
 
-                job.OutputBlobName = $"{msg.JobId}.json";
-                job.Status = "Succeeded";
+                job.OutputBlobName = outputBlobName;
                 job.ErrorMessage = null;
-
+                job.Status = "Succeeded";
                 await TouchAsync("Succeeded");
 
-                _log.LogInformation("JOB OK jobId={jobId}", msg.JobId);
+                Console.WriteLine($"JOB OK  jobId='{msg.JobId}'");
                 return;
             }
 
-            // 7) Non-2xx → fail
+            // non-2xx => fail but DO NOT throw (no poison loop)
             job.Status = "Failed";
-            await TouchAsync(
-                "Failed",
-                $"ACA returned {status}: {(body?.Length > 1000 ? body[..1000] : body)}"
-            );
+            var err = $"ACA returned {status}: {(body?.Length > 1000 ? body[..1000] : body)}";
+            await TouchAsync("Failed", err);
+
+            Console.WriteLine($"JOB FAIL jobId='{msg.JobId}' status={status}");
+            return;
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "JOB EXCEPTION");
+            Console.WriteLine($"JOB ERR ex:\n{ex}");
 
             if (job != null)
             {
                 try
                 {
                     job.Status = "Failed";
-                    job.LastStep = "Exception";
-                    job.ErrorMessage = ex.ToString();
-                    job.UpdatedUtc = DateTimeOffset.UtcNow;
-
-                    // 🔴 Ook hier: Upsert
-                    await table.UpsertEntityAsync(job, TableUpdateMode.Replace);
+                    await TouchAsync("Exception", ex.ToString());
                 }
-                catch
+                catch (Exception ex2)
                 {
-                    // worst case: function logs hebben het
+                    Console.WriteLine($"JOB ERR (failed to persist failure) ex2:\n{ex2}");
                 }
             }
 
-            // opnieuw gooien → runtime retry / poison indien echt kapot
-            throw;
+            // Cruciaal: niet rethrowen -> geen poison storm
+            return;
         }
     }
 }
