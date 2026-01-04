@@ -10,8 +10,12 @@
         }
     },
     "extensions": {
-    "queues": {
-      "messageEncoding": "none"
+        "queues": {
+            "messageEncoding": "none",
+            "batchSize": 1,
+            "newBatchThreshold": 0,
+            "visibilityTimeout": "00:01:00",
+            "maxDequeueCount": 8
+        }
     }
-  }
 }
