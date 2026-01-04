@@ -77,11 +77,13 @@ public static class AcaForwarder
 
         Console.WriteLine($"FWD MAP  corr={corr} url='{url}' codePresent={(code != null)} codeLen={Len(code)} jsonLen={Len(json)}");
 
-        var delaySeconds = 1.0;
+        var delaySeconds = 2.0;
+        const int maxAttempts = 60;
+        const double maxDelaySeconds = 60.0;
 
-        for (int attempt = 1; attempt <= 12; attempt++)
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
-            Console.WriteLine($"FWD TRY  corr={corr} attempt={attempt} delayBaseSec={delaySeconds:0.##}");
+            Console.WriteLine($"FWD TRY  corr={corr} sessionId={sessionId} attempt={attempt} delayBaseSec={delaySeconds:0.##}");
 
             string bearer;
             try
@@ -90,8 +92,11 @@ public static class AcaForwarder
             }
             catch (Exception exTok)
             {
-                Console.WriteLine($"FWD ERR  corr={corr} attempt={attempt} reason=token_failed ex='{Clip(exTok.ToString(), 800)}'");
-                return (500, """{"error":"token_failed"}""", "application/json");
+                Console.WriteLine($"FWD ERR  corr={corr} sessionId={sessionId} attempt={attempt} reason=token_failed ex='{Clip(exTok.ToString(), 800)}'");
+                if (attempt == maxAttempts) return (500, """{"error":"token_failed"}""", "application/json");
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
+                delaySeconds = Math.Min(delaySeconds * 1.8, maxDelaySeconds);
+                continue;
             }
 
             using var msg = new HttpRequestMessage(HttpMethod.Post, url);
@@ -109,28 +114,29 @@ public static class AcaForwarder
             }
             catch (Exception exReq)
             {
-                Console.WriteLine($"FWD ERR  corr={corr} attempt={attempt} reason=http_send_failed ex='{Clip(exReq.ToString(), 800)}'");
-                await Task.Delay(TimeSpan.FromSeconds(Math.Min(delaySeconds, 12)));
-                delaySeconds = Math.Min(delaySeconds * 1.8, 12);
+                Console.WriteLine($"FWD ERR  corr={corr} sessionId={sessionId} attempt={attempt} reason=http_send_failed ex='{Clip(exReq.ToString(), 800)}'");
+                if (attempt == maxAttempts) return (500, """{"error":"http_send_failed"}""", "application/json");
+                await Task.Delay(TimeSpan.FromSeconds(delaySeconds));
+                delaySeconds = Math.Min(delaySeconds * 1.8, maxDelaySeconds);
                 continue;
             }
 
             var status = (int)resp.StatusCode;
             var ct = resp.Content.Headers.ContentType?.ToString() ?? "application/json";
             var body = await resp.Content.ReadAsStringAsync();
+            var ra = resp.Headers.RetryAfter?.Delta?.TotalSeconds;
 
-            Console.WriteLine($"FWD RESP corr={corr} attempt={attempt} status={status} ct='{ct}' bodyLen={Len(body)} bodySnippet='{Clip(body)}'");
+            Console.WriteLine($"FWD RESP corr={corr} sessionId={sessionId} attempt={attempt} status={status} ct='{ct}' bodyLen={Len(body)} retryAfterSec={(ra ?? 0):0.##} bodySnippet='{Clip(body)}'");
 
             if (!ShouldRetry(resp.StatusCode))
                 return (status, body, ct);
 
-            var ra = resp.Headers.RetryAfter?.Delta?.TotalSeconds;
             var sleep = (ra.HasValue && ra.Value > 0) ? ra.Value : delaySeconds;
 
-            Console.WriteLine($"FWD RET  corr={corr} attempt={attempt} status={status} sleepSec={sleep:0.##}");
+            Console.WriteLine($"FWD RET  corr={corr} sessionId={sessionId} attempt={attempt} status={status} sleepSec={sleep:0.##}");
 
             await Task.Delay(TimeSpan.FromSeconds(sleep));
-            delaySeconds = Math.Min(delaySeconds * 1.8, 12);
+            delaySeconds = Math.Min(delaySeconds * 1.8, maxDelaySeconds);
         }
 
         sw.Stop();
