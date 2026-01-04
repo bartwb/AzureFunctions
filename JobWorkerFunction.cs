@@ -76,6 +76,20 @@ public class JobWorkerFunction
             job.RunnerSnippet = body?.Length > 500 ? body[..500] : body;
             await TouchAsync($"RunnerReturned:{status}");
 
+            // Throttling / tijdelijke errors => opnieuw proberen via queue i.p.v. fail
+            if (status is 429 or 502 or 503 or 504)
+            {
+                Console.WriteLine($"JOB RETRY jobId='{msg.JobId}' reason=throttled status={status}");
+                job.Status = "Queued";
+                job.LastStep = "ThrottledRetry";
+                await TouchAsync("ThrottledRetry");
+
+                var q = StorageClients.JobsQueue();
+                var retryMsg = JsonSerializer.Serialize(new JobMessage(msg.Operation, msg.JobId));
+                await q.SendMessageAsync(retryMsg, visibilityTimeout: TimeSpan.FromSeconds(60));
+                return;
+            }
+
             // success
             if (status >= 200 && status < 300)
             {
