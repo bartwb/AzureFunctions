@@ -11,49 +11,57 @@ public class TestResultsFunction
     public async Task<HttpResponseData> ListAll(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "results")] HttpRequestData req)
     {
-        var container = StorageClients.TestResultsContainer();
+        var containers = new[]
+        {
+            (Name: "test-results", Client: StorageClients.TestResultsContainer()),
+            (Name: "output",       Client: StorageClients.OutputContainer())
+        };
+
         var items = new List<object>();
 
-        await foreach (var blob in container.GetBlobsAsync())
+        foreach (var (name, container) in containers)
         {
-            // Skip non-json? we keep all, but try parse if JSON.
-            var name = blob.Name;
-            var lastMod = blob.Properties.LastModified;
-            var ct = blob.Properties.ContentType;
-
-            try
+            await foreach (var blob in container.GetBlobsAsync())
             {
-                var client = container.GetBlobClient(name);
-                var dl = await client.DownloadContentAsync();
-                var raw = dl.Value.Content.ToString();
-                object parsed;
+                var blobName = blob.Name;
+                var lastMod = blob.Properties.LastModified;
+                var ct = blob.Properties.ContentType;
+
                 try
                 {
-                    parsed = JsonSerializer.Deserialize<object>(raw) ?? raw;
+                    var client = container.GetBlobClient(blobName);
+                    var dl = await client.DownloadContentAsync();
+                    var raw = dl.Value.Content.ToString();
+                    object parsed;
+                    try
+                    {
+                        parsed = JsonSerializer.Deserialize<object>(raw) ?? raw;
+                    }
+                    catch
+                    {
+                        parsed = raw;
+                    }
+
+                    items.Add(new
+                    {
+                        container = name,
+                        blobName,
+                        lastModified = lastMod,
+                        contentType = ct,
+                        content = parsed
+                    });
                 }
                 catch
                 {
-                    parsed = raw;
+                    // skip broken blobs
                 }
-
-                items.Add(new
-                {
-                    blobName = name,
-                    lastModified = lastMod,
-                    contentType = ct,
-                    content = parsed
-                });
-            }
-            catch
-            {
-                // skip broken blobs
             }
         }
 
         // Sorteer laatste bovenaan
         items = items
             .OrderByDescending(i => ((dynamic)i).lastModified)
-            .Take(100)
+            .Take(200)
             .ToList();
 
         var resp = req.CreateResponse(HttpStatusCode.OK);
