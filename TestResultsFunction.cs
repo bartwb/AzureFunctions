@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Azure.Functions.Worker.Http;
 
@@ -6,6 +7,61 @@ namespace FunctionsGateway;
 
 public class TestResultsFunction
 {
+    [Function("test-results-list")]
+    public async Task<HttpResponseData> ListAll(
+        [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "results")] HttpRequestData req)
+    {
+        var container = StorageClients.TestResultsContainer();
+        var items = new List<object>();
+
+        await foreach (var blob in container.GetBlobsAsync())
+        {
+            // Skip non-json? we keep all, but try parse if JSON.
+            var name = blob.Name;
+            var lastMod = blob.Properties.LastModified;
+            var ct = blob.Properties.ContentType;
+
+            try
+            {
+                var client = container.GetBlobClient(name);
+                var dl = await client.DownloadContentAsync();
+                var raw = dl.Value.Content.ToString();
+                object parsed;
+                try
+                {
+                    parsed = JsonSerializer.Deserialize<object>(raw) ?? raw;
+                }
+                catch
+                {
+                    parsed = raw;
+                }
+
+                items.Add(new
+                {
+                    blobName = name,
+                    lastModified = lastMod,
+                    contentType = ct,
+                    content = parsed
+                });
+            }
+            catch
+            {
+                // skip broken blobs
+            }
+        }
+
+        // Sorteer laatste bovenaan
+        items = items
+            .OrderByDescending(i => ((dynamic)i).lastModified)
+            .Take(100)
+            .ToList();
+
+        var resp = req.CreateResponse(HttpStatusCode.OK);
+        resp.Headers.Add("Content-Type", "application/json");
+        await resp.WriteStringAsync(JsonSerializer.Serialize(items));
+        return resp;
+    }
+
     [Function("test-results")]
     public async Task<HttpResponseData> Run(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "results/{operation}/{jobId}")] HttpRequestData req,
