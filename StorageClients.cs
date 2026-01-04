@@ -14,4 +14,5 @@ public static class StorageClients
     public static TableClient JobsTable() => new TableClient(Conn, "Jobs");
     public static BlobContainerClient InputContainer() => new BlobContainerClient(Conn, "job-input");
     public static BlobContainerClient OutputContainer() => new BlobContainerClient(Conn, "job-output");
+    public static BlobContainerClient BackupContainer() => new BlobContainerClient(Conn, "job-backups");
 }
