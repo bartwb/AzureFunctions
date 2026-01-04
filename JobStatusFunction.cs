@@ -109,17 +109,23 @@ public class JobStatusFunction
                 updatedUtc = entity.UpdatedUtc,
                 attempts = entity.Attempts,
                 lastStep = entity.LastStep,
-                outputBlobName = entity.OutputBlobName
+                outputBlobName = entity.OutputBlobName,
+                resultBlobName = entity.ResultBlobName
             }));
             return resp;
         }
 
-        // Output uit blob lezen
-        if (!string.IsNullOrWhiteSpace(entity.OutputBlobName))
+        // Output uit blob lezen (prefereer test-results, fallback naar legacy output)
+        var blobName = entity.ResultBlobName ?? entity.OutputBlobName;
+        var container = entity.ResultBlobName != null
+            ? StorageClients.TestResultsContainer()
+            : StorageClients.OutputContainer();
+
+        if (!string.IsNullOrWhiteSpace(blobName))
         {
             try
             {
-                var outBlob = StorageClients.OutputContainer().GetBlobClient(entity.OutputBlobName);
+                var outBlob = container.GetBlobClient(blobName);
                 var dl = await outBlob.DownloadContentAsync();
                 var json = dl.Value.Content.ToString();
 

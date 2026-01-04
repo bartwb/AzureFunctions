@@ -8,10 +8,10 @@ public class JobWorkerFunction
 {
     [Function("job-worker")]
     public async Task Run([QueueTrigger("jobs", Connection = "StorageConnection")] string msgJson)
-    {
-        static int Len(string? s) => string.IsNullOrEmpty(s) ? 0 : s.Length;
-        static string Clip(string? s, int max = 400) =>
-            string.IsNullOrEmpty(s) ? "" : (s.Length <= max ? s : s[..max] + "...");
+        {
+            static int Len(string? s) => string.IsNullOrEmpty(s) ? 0 : s.Length;
+            static string Clip(string? s, int max = 400) =>
+                string.IsNullOrEmpty(s) ? "" : (s.Length <= max ? s : s[..max] + "...");
 
         Console.WriteLine($"JOB IN  msgLen={Len(msgJson)} snippet='{Clip(msgJson, 300)}'");
 
@@ -80,18 +80,31 @@ public class JobWorkerFunction
             if (status >= 200 && status < 300)
             {
                 await TouchAsync("WritingOutput");
-                await StorageClients.OutputContainer().CreateIfNotExistsAsync();
+
+                // Ensure containers exist (legacy output + new test-results)
+                var outputContainer = StorageClients.OutputContainer();
+                var resultsContainer = StorageClients.TestResultsContainer();
+                await Task.WhenAll(
+                    outputContainer.CreateIfNotExistsAsync(),
+                    resultsContainer.CreateIfNotExistsAsync()
+                );
 
                 var outputBlobName = $"{msg.JobId}.json";
-                var outBlob = StorageClients.OutputContainer().GetBlobClient(outputBlobName);
 
                 var toStore = (contentType?.Contains("application/json") ?? false)
                     ? body
                     : JsonSerializer.Serialize(new { operation = msg.Operation, ok = true, contentType, body });
 
+                // Primary: new test-results container
+                var resultBlob = resultsContainer.GetBlobClient(outputBlobName);
+                await resultBlob.UploadAsync(BinaryData.FromString(toStore ?? ""), overwrite: true);
+
+                // Legacy: also write to job-output for backward compatibility
+                var outBlob = outputContainer.GetBlobClient(outputBlobName);
                 await outBlob.UploadAsync(BinaryData.FromString(toStore ?? ""), overwrite: true);
 
                 job.OutputBlobName = outputBlobName;
+                job.ResultBlobName = outputBlobName;
                 job.ErrorMessage = null;
                 job.Status = "Succeeded";
                 await TouchAsync("Succeeded");
