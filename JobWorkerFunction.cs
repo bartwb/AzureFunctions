@@ -113,10 +113,42 @@ public class JobWorkerFunction
                 return;
             }
 
-            // non-2xx => fail but DO NOT throw (no poison loop)
+            // non-2xx => fail but DO NOT throw (no poison loop); also persist failure payload
+            await TouchAsync("WritingErrorOutput");
+
+            var outputContainerFail = StorageClients.OutputContainer();
+            var resultsContainerFail = StorageClients.TestResultsContainer();
+            await Task.WhenAll(
+                outputContainerFail.CreateIfNotExistsAsync(),
+                resultsContainerFail.CreateIfNotExistsAsync()
+            );
+
+            var failBlobName = $"{msg.JobId}.json";
+            var err = $"ACA returned {status}";
+            var failPayload = JsonSerializer.Serialize(new
+            {
+                operation = msg.Operation,
+                ok = false,
+                runnerStatus = status,
+                runnerContentType = contentType,
+                runnerBody = body,
+                error = err,
+                sessionId = job.SessionId,
+                jobId = msg.JobId,
+                lastStep = job.LastStep
+            });
+
+            var resultBlobFail = resultsContainerFail.GetBlobClient(failBlobName);
+            await resultBlobFail.UploadAsync(BinaryData.FromString(failPayload), overwrite: true);
+
+            var outBlobFail = outputContainerFail.GetBlobClient(failBlobName);
+            await outBlobFail.UploadAsync(BinaryData.FromString(failPayload), overwrite: true);
+
+            job.OutputBlobName = failBlobName;
+            job.ResultBlobName = failBlobName;
             job.Status = "Failed";
-            var err = $"ACA returned {status}: {(body?.Length > 1000 ? body[..1000] : body)}";
-            await TouchAsync("Failed", err);
+            job.ErrorMessage = body?.Length > 1000 ? body[..1000] : body ?? err;
+            await TouchAsync("Failed", job.ErrorMessage);
 
             Console.WriteLine($"JOB FAIL jobId='{msg.JobId}' status={status}");
             return;
@@ -129,6 +161,35 @@ public class JobWorkerFunction
             {
                 try
                 {
+                    // Persist exception details to blobs for later inspection
+                    await TouchAsync("WritingExceptionOutput");
+                    var outputContainerErr = StorageClients.OutputContainer();
+                    var resultsContainerErr = StorageClients.TestResultsContainer();
+                    await Task.WhenAll(
+                        outputContainerErr.CreateIfNotExistsAsync(),
+                        resultsContainerErr.CreateIfNotExistsAsync()
+                    );
+
+                    var errBlobName = $"{job.RowKey}.json";
+                    var exceptionPayload = JsonSerializer.Serialize(new
+                    {
+                        operation = job.PartitionKey,
+                        ok = false,
+                        error = "exception_during_processing",
+                        exception = ex.ToString(),
+                        sessionId = job.SessionId,
+                        jobId = job.RowKey,
+                        lastStep = job.LastStep
+                    });
+
+                    var resultBlobErr = resultsContainerErr.GetBlobClient(errBlobName);
+                    await resultBlobErr.UploadAsync(BinaryData.FromString(exceptionPayload), overwrite: true);
+
+                    var outBlobErr = outputContainerErr.GetBlobClient(errBlobName);
+                    await outBlobErr.UploadAsync(BinaryData.FromString(exceptionPayload), overwrite: true);
+
+                    job.OutputBlobName = errBlobName;
+                    job.ResultBlobName = errBlobName;
                     job.Status = "Failed";
                     await TouchAsync("Exception", ex.ToString());
                 }
