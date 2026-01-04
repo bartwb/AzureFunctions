@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using Azure.Storage.Blobs.Models;
 
 namespace FunctionsGateway;
 
@@ -58,6 +59,7 @@ public static class JobSubmitter
 
             // Capture backup copy with metadata (so input never lost)
             string? backupBlobName = null;
+            string? backupCodeBlobName = null;
             try
             {
                 JsonElement? root = null;
@@ -113,6 +115,21 @@ public static class JobSubmitter
                 var backupBlob = backup.GetBlobClient(backupBlobName);
                 await backupBlob.UploadAsync(BinaryData.FromString(JsonSerializer.Serialize(backupPayload)), overwrite: true);
                 Console.WriteLine($"SUBMIT STEP corr={corr} step=upload_backup_done elapsedMs={sw.ElapsedMilliseconds}");
+
+                // Plain-text code copy in same container for easy re-import
+                if (!string.IsNullOrWhiteSpace(code))
+                {
+                    backupCodeBlobName = $"{jobId}-code.txt";
+                    Console.WriteLine($"SUBMIT STEP corr={corr} step=upload_code_start blob='{backupCodeBlobName}' codeLen={Len(code)}");
+                    var codeBlob = backup.GetBlobClient(backupCodeBlobName);
+                    await codeBlob.UploadAsync(
+                        BinaryData.FromString(code),
+                        new BlobUploadOptions
+                        {
+                            HttpHeaders = new BlobHttpHeaders { ContentType = "text/plain; charset=utf-8" }
+                        });
+                    Console.WriteLine($"SUBMIT STEP corr={corr} step=upload_code_done elapsedMs={sw.ElapsedMilliseconds}");
+                }
             }
             catch (Exception exBackup)
             {
@@ -132,6 +149,7 @@ public static class JobSubmitter
                 InputBlobName = inputBlobName,
                 OutputBlobName = "",
                 BackupBlobName = backupBlobName,
+                BackupCodeBlobName = backupCodeBlobName,
                 Attempts = 0,
                 LastStep = "Enqueued"
             };

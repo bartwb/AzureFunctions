@@ -20,6 +20,7 @@ public class JobEntity : ITableEntity
     public string InputBlobName { get; set; } = default!;   // jobId.json
     public string OutputBlobName { get; set; } = default!;  // jobId.json (optioneel)
     public string? BackupBlobName { get; set; }             // jobId-backup.json (optioneel)
+    public string? BackupCodeBlobName { get; set; }         // jobId-code.txt (optioneel)
     public string? ErrorMessage { get; set; }
 
     public int Attempts { get; set; } = 0;
