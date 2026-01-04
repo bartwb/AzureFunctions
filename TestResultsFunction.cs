@@ -11,50 +11,43 @@ public class TestResultsFunction
     public async Task<HttpResponseData> ListAll(
         [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "results")] HttpRequestData req)
     {
-        var containers = new[]
-        {
-            (Name: "test-results", Client: StorageClients.TestResultsContainer()),
-            (Name: "output",       Client: StorageClients.OutputContainer())
-        };
-
+        // Alleen de test-results container uitlezen, zoals gewenst.
+        var container = StorageClients.TestResultsContainer();
         var items = new List<object>();
 
-        foreach (var (name, container) in containers)
+        await foreach (var blob in container.GetBlobsAsync())
         {
-            await foreach (var blob in container.GetBlobsAsync())
-            {
-                var blobName = blob.Name;
-                var lastMod = blob.Properties.LastModified;
-                var ct = blob.Properties.ContentType;
+            var blobName = blob.Name;
+            var lastMod = blob.Properties.LastModified;
+            var ct = blob.Properties.ContentType;
 
+            try
+            {
+                var client = container.GetBlobClient(blobName);
+                var dl = await client.DownloadContentAsync();
+                var raw = dl.Value.Content.ToString();
+                object parsed;
                 try
                 {
-                    var client = container.GetBlobClient(blobName);
-                    var dl = await client.DownloadContentAsync();
-                    var raw = dl.Value.Content.ToString();
-                    object parsed;
-                    try
-                    {
-                        parsed = JsonSerializer.Deserialize<object>(raw) ?? raw;
-                    }
-                    catch
-                    {
-                        parsed = raw;
-                    }
-
-                    items.Add(new
-                    {
-                        container = name,
-                        blobName,
-                        lastModified = lastMod,
-                        contentType = ct,
-                        content = parsed
-                    });
+                    parsed = JsonSerializer.Deserialize<object>(raw) ?? raw;
                 }
                 catch
                 {
-                    // skip broken blobs
+                    parsed = raw;
                 }
+
+                items.Add(new
+                {
+                    container = "test-results",
+                    blobName,
+                    lastModified = lastMod,
+                    contentType = ct,
+                    content = parsed
+                });
+            }
+            catch
+            {
+                // skip broken blobs
             }
         }
 
